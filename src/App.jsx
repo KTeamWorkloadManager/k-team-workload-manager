@@ -365,13 +365,28 @@ export default function App() {
     const updatedTasks = projectTasks.map((t) => t.id === taskId ? { ...t, ...draft } : t);
     setProjectTasks(updatedTasks);
 
-    // Auto-reactivate project if any task is now non-Complete
     const task = projectTasks.find((t) => t.id === taskId);
-    if (task && draft.status !== "Complete") {
-      const project = projects.find((p) => p.id === task.project_id);
+    if (!task) return;
+    const projectId = task.project_id;
+
+    if (draft.status === "Complete") {
+      // Auto-complete project when all its tasks are now Complete
+      const relatedTasks = updatedTasks.filter((t) => t.project_id === projectId);
+      const allComplete = relatedTasks.length > 0 && relatedTasks.every((t) => t.status === "Complete");
+      if (allComplete) {
+        const { error: projError } = await supabase.from("projects").update({ completed: true }).eq("id", projectId);
+        if (projError) {
+          setGlobalError(`Task saved, but could not close project: ${projError.message}`);
+        } else {
+          setProjects((cur) => cur.map((p) => p.id === projectId ? { ...p, completed: true } : p));
+        }
+      }
+    } else {
+      // Auto-reactivate project if a task is set back to non-Complete
+      const project = projects.find((p) => p.id === projectId);
       if (project?.completed) {
-        await supabase.from("projects").update({ completed: false }).eq("id", project.id);
-        setProjects((cur) => cur.map((p) => p.id === project.id ? { ...p, completed: false } : p));
+        await supabase.from("projects").update({ completed: false }).eq("id", projectId);
+        setProjects((cur) => cur.map((p) => p.id === projectId ? { ...p, completed: false } : p));
       }
     }
   }
