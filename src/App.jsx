@@ -1,206 +1,191 @@
-import React, { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { supabase } from "./supabase";
+import {
+  addDays, calcLoadPercent, getMonthGrid, groupTasksByProject,
+  makeId, projectSort, startOfWeek, sumHoursInRange, ymd,
+} from "./utils/helpers";
+import OverviewTab from "./components/OverviewTab";
+import ProjectsTab from "./components/ProjectsTab";
+import CalendarTab from "./components/CalendarTab";
+import PersonTab from "./components/PersonTab";
+import BookingModal from "./components/BookingModal";
 
-const teamMembers = [
+// =============================================================================
+// FALLBACK TEAM MEMBERS
+// Change #1: Leon's weeklyCapacity is now 24. J team removed (Change #2).
+// To manage team members from the database instead, run this SQL:
+//
+// CREATE TABLE team_members (
+//   id TEXT PRIMARY KEY,
+//   name TEXT NOT NULL,
+//   weekly_capacity INTEGER NOT NULL
+// );
+// INSERT INTO team_members (id, name, weekly_capacity) VALUES
+//   ('s1','Frankie',40), ('s4','Jackson',40),
+//   ('s5','Leon',24), ('s3','Oment',40), ('s2','Tony',40);
+// =============================================================================
+
+const FALLBACK_TEAM_MEMBERS = [
   { id: "s1", name: "Frankie", weeklyCapacity: 40 },
   { id: "s4", name: "Jackson", weeklyCapacity: 40 },
-  { id: "jt", name: "J team", weeklyCapacity: 999 },
-  { id: "s5", name: "Leon", weeklyCapacity: 32, targetCapacity: 32, minCapacity: 16 },
+  { id: "s5", name: "Leon", weeklyCapacity: 24 },
   { id: "s3", name: "Oment", weeklyCapacity: 40 },
   { id: "s2", name: "Tony", weeklyCapacity: 40 },
 ].sort((a, b) => a.name.localeCompare(b.name));
 
-function parseDate(dateString) {
-  return new Date(`${dateString}T00:00:00`);
-}
+const FIRST_MEMBER_ID = FALLBACK_TEAM_MEMBERS[0]?.id || "s1";
 
-function ymd(date) {
-  const yr = date.getFullYear();
-  const mo = `${date.getMonth() + 1}`.padStart(2, "0");
-  const da = `${date.getDate()}`.padStart(2, "0");
-  return `${yr}-${mo}-${da}`;
-}
+// =============================================================================
+// SQL TO RUN IN SUPABASE:
+//
+// -- Projects table additions (Change #5, #11):
+// ALTER TABLE projects ADD COLUMN IF NOT EXISTS completed BOOLEAN DEFAULT false;
+// ALTER TABLE projects ADD COLUMN IF NOT EXISTS comments TEXT;
+//
+// -- Bookings table additions (Change #7):
+// ALTER TABLE bookings ADD COLUMN IF NOT EXISTS linked_project_id TEXT;
+// ALTER TABLE bookings ADD COLUMN IF NOT EXISTS linked_task_id TEXT;
+//
+// -- Project notes table (Change #10):
+// CREATE TABLE project_notes (
+//   id TEXT PRIMARY KEY,
+//   project_id TEXT,
+//   content TEXT,
+//   created_at TIMESTAMPTZ DEFAULT now()
+// );
+// =============================================================================
 
-function addDays(date, count) {
-  const next = new Date(date);
-  next.setDate(next.getDate() + count);
-  return next;
-}
-
-function startOfWeek(date) {
-  const mondayOffset = (date.getDay() + 6) % 7;
-  return addDays(date, -mondayOffset);
-}
-
-function formatDate(dateString) {
-  return parseDate(dateString).toLocaleDateString("en-NZ", {
-    weekday: "short",
-    day: "numeric",
-    month: "short",
-  });
-}
-
-function formatMonthLabel(date) {
-  return date.toLocaleDateString("en-NZ", { month: "long", year: "numeric" });
-}
-
-function getMonthGrid(baseDate) {
-  const firstOfMonth = new Date(baseDate.getFullYear(), baseDate.getMonth(), 1);
-  const startDay = (firstOfMonth.getDay() + 6) % 7;
-  const gridStart = addDays(firstOfMonth, -startDay);
-  return Array.from({ length: 35 }, (_, i) => addDays(gridStart, i));
-}
-
-function bookingColor(booking) {
-  if (booking.type === "Field" && booking.tentative) return "#fecaca";
-  return booking.type === "Field" ? "#ffedd5" : "#dbeafe";
-}
-
-function loadColor(percent) {
-  if (percent > 100) return "#7f1d1d";
-  if (percent >= 91) return "#f97316";
-  if (percent >= 71) return "#16a34a";
-  return "#93c5fd";
-}
-
-function cardStyle() {
-  return {
-    background: "white",
-    borderRadius: 20,
-    padding: 20,
-    boxShadow: "0 4px 18px rgba(15, 23, 42, 0.08)",
-    border: "1px solid #e5e7eb",
-  };
-}
-
-function projectStatusRank(status) {
-  if (status === "Complete") return 3;
-  if (status === "Due") return 2;
-  return 1;
-}
-
-function projectSort(a, b) {
-  return (a.number || "").localeCompare(b.number || "", undefined, { numeric: true });
-}
-
-function groupTasksByProject(tasks, projects) {
-  return [...projects]
-    .sort(projectSort)
-    .map((project) => ({
-      ...project,
-      tasks: tasks
-        .filter((task) => task.project_id === project.id)
-        .sort(
-          (a, b) =>
-            parseDate(a.due_date) - parseDate(b.due_date) ||
-            projectStatusRank(b.status) - projectStatusRank(a.status)
-        ),
-    }));
-}
-
-function calcLoadPercent(hours, person, weeks = 1) {
-  const baseCapacity = (person.targetCapacity || person.weeklyCapacity) * weeks;
-  return Math.round((hours / baseCapacity) * 100);
-}
-
-function makeId(prefix) {
-  return typeof crypto !== "undefined" && crypto.randomUUID
-    ? crypto.randomUUID()
-    : `${prefix}-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
-}
-
-function sumHoursInRange(bookings, startDate, endDate) {
-  return bookings
-    .filter((booking) => {
-      const date = parseDate(booking.date);
-      return date >= startDate && date <= endDate;
-    })
-    .reduce((sum, booking) => sum + Number(booking.hours || 0), 0);
-}
+const EMPTY_BOOKING = {
+  title: "",
+  type: "Office",
+  date: ymd(new Date()),
+  assigned_to: FIRST_MEMBER_ID,
+  assistant_assigned_to: "",
+  hours: 4,
+  tentative: false,
+  linked_project_id: "",
+  linked_task_id: "",
+};
 
 export default function App() {
   const [tab, setTab] = useState("overview");
-  const [selectedPersonId, setSelectedPersonId] = useState(teamMembers[0].id);
+  const [selectedPersonId, setSelectedPersonId] = useState(FIRST_MEMBER_ID);
   const [selectedProjectId, setSelectedProjectId] = useState(null);
   const [calendarMonth, setCalendarMonth] = useState(new Date());
   const [draggedBookingId, setDraggedBookingId] = useState(null);
   const [overviewWeekStart, setOverviewWeekStart] = useState(startOfWeek(new Date()));
   const [personMonth, setPersonMonth] = useState(new Date());
 
+  const [teamMembers, setTeamMembers] = useState(FALLBACK_TEAM_MEMBERS);
   const [projects, setProjects] = useState([]);
   const [projectTasks, setProjectTasks] = useState([]);
   const [bookings, setBookings] = useState([]);
+  const [projectNotes, setProjectNotes] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [savingProject, setSavingProject] = useState(false);
+  const [savingTask, setSavingTask] = useState(false);
+  const [savingBooking, setSavingBooking] = useState(false);
+  const [globalError, setGlobalError] = useState("");
 
-  const [newBooking, setNewBooking] = useState({
-    title: "",
-    type: "Office",
-    date: ymd(new Date()),
-    assigned_to: teamMembers[0].id,
-    assistant_assigned_to: "",
-    hours: 4,
-    tentative: false,
-  });
-
+  // Change #6: booking modal instead of tab
+  const [bookingModal, setBookingModal] = useState({ open: false, date: "", personId: "" });
+  const [newBooking, setNewBooking] = useState(EMPTY_BOOKING);
   const [editingBookingId, setEditingBookingId] = useState(null);
-  const [bookingMessage, setBookingMessage] = useState("");
+  const [bookingMessage, setBookingMessage] = useState({ text: "", isError: false });
 
   const [projectDraft, setProjectDraft] = useState({
     number: "",
     name: "",
     primary_surveyor_id: "",
+    comments: "",
+    completed: false,
   });
-  const [projectSaveMessage, setProjectSaveMessage] = useState("");
+  const [projectSaveMessage, setProjectSaveMessage] = useState({ text: "", isError: false });
   const [taskDrafts, setTaskDrafts] = useState({});
-  const [taskSaveMessage, setTaskSaveMessage] = useState("");
+  const [taskSaveMessage, setTaskSaveMessage] = useState({ text: "", isError: false });
 
-  const teamMap = useMemo(() => Object.fromEntries(teamMembers.map((p) => [p.id, p])), []);
-  const projectMap = useMemo(() => Object.fromEntries(projects.map((p) => [p.id, p])), [projects]);
+  const teamMap = useMemo(() => Object.fromEntries(teamMembers.map((p) => [p.id, p])), [teamMembers]);
   const projectGroups = useMemo(() => groupTasksByProject(projectTasks, projects), [projectTasks, projects]);
-
   const currentPeriodStart = useMemo(() => startOfWeek(new Date()), []);
+
+  const [currentMonthStart, currentMonthEnd, currentMonthWeeks] = useMemo(() => {
+    const now = new Date();
+    const start = new Date(now.getFullYear(), now.getMonth(), 1);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+    end.setHours(0, 0, 0, 0);
+    return [start, end, end.getDate() / 7];
+  }, []);
 
   useEffect(() => {
     loadAllData();
   }, []);
 
+  // Sync project draft when selected project changes
   useEffect(() => {
-    const selectedProject = projects.find((project) => project.id === selectedProjectId);
+    const selectedProject = projects.find((p) => p.id === selectedProjectId);
     if (!selectedProject) return;
 
     setProjectDraft({
       number: selectedProject.number || "",
       name: selectedProject.name || "",
       primary_surveyor_id: selectedProject.primary_surveyor_id || "",
+      comments: selectedProject.comments || "",
+      completed: selectedProject.completed || false,
     });
-    setProjectSaveMessage("");
-    setTaskSaveMessage("");
+    setProjectSaveMessage({ text: "", isError: false });
+    setTaskSaveMessage({ text: "", isError: false });
 
-    const selectedProjectTasks = projectTasks.filter((task) => task.project_id === selectedProjectId);
-    const nextDrafts = {};
-    selectedProjectTasks.forEach((task) => {
-      nextDrafts[task.id] = {
-        title: task.title || "",
-        assigned_to: task.assigned_to || selectedProject.primary_surveyor_id || "",
-        due_date: task.due_date || "",
-        status: task.status || "Coming",
-      };
-    });
-    setTaskDrafts(nextDrafts);
+    const drafts = {};
+    projectTasks
+      .filter((t) => t.project_id === selectedProjectId)
+      .forEach((task) => {
+        drafts[task.id] = {
+          title: task.title || "",
+          assigned_to: task.assigned_to || selectedProject.primary_surveyor_id || "",
+          due_date: task.due_date || "",
+          status: task.status || "To Do",
+        };
+      });
+    setTaskDrafts(drafts);
   }, [selectedProjectId, projects, projectTasks]);
 
   async function loadAllData() {
     setLoading(true);
 
-    const [projectsRes, tasksRes, bookingsRes] = await Promise.all([
+    const [tmRes, projectsRes, tasksRes, bookingsRes, notesRes] = await Promise.all([
+      supabase.from("team_members").select("*"),
       supabase.from("projects").select("*").order("number", { ascending: true }),
       supabase.from("project_tasks").select("*"),
       supabase.from("bookings").select("*"),
+      supabase.from("project_notes").select("*"),
     ]);
 
-    if (projectsRes.error) console.error(projectsRes.error);
-    if (tasksRes.error) console.error(tasksRes.error);
-    if (bookingsRes.error) console.error(bookingsRes.error);
+    // team_members is optional — fall back to hardcoded if the table doesn't exist
+    if (!tmRes.error && tmRes.data?.length) {
+      const mapped = tmRes.data
+        .filter((m) => m.id !== "jt") // ensure J team is excluded even if still in DB
+        .map((m) => ({
+          id: m.id,
+          name: m.name,
+          weeklyCapacity: m.weekly_capacity,
+        }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+      setTeamMembers(mapped);
+      const first = mapped[0];
+      if (first) {
+        setSelectedPersonId((cur) => cur || first.id);
+        setNewBooking((cur) => ({ ...cur, assigned_to: cur.assigned_to || first.id }));
+      }
+    }
+
+    if (projectsRes.error) setGlobalError(`Failed to load projects: ${projectsRes.error.message}`);
+    if (tasksRes.error) setGlobalError(`Failed to load tasks: ${tasksRes.error.message}`);
+    if (bookingsRes.error) setGlobalError(`Failed to load bookings: ${bookingsRes.error.message}`);
+    // project_notes table is optional — don't error if it doesn't exist yet
+    if (!notesRes.error && notesRes.data) {
+      setProjectNotes(notesRes.data);
+    }
 
     const nextProjects = projectsRes.data || [];
     setProjects(nextProjects);
@@ -208,10 +193,10 @@ export default function App() {
     setBookings(bookingsRes.data || []);
 
     if (nextProjects.length) {
-      const stillExists = nextProjects.some((p) => p.id === selectedProjectId);
-      if (!selectedProjectId || !stillExists) {
-        setSelectedProjectId(nextProjects[0].id);
-      }
+      setSelectedProjectId((cur) => {
+        const stillExists = nextProjects.some((p) => p.id === cur);
+        return cur && stillExists ? cur : nextProjects[0].id;
+      });
     } else {
       setSelectedProjectId(null);
     }
@@ -219,27 +204,24 @@ export default function App() {
     setLoading(false);
   }
 
+  // --- Computed values ---
+
   const allWeeksLoad = useMemo(() => {
     const shownWeekEnd = addDays(overviewWeekStart, 6);
-
     const currentWeekEnd = addDays(currentPeriodStart, 6);
     const currentFortnightEnd = addDays(currentPeriodStart, 13);
     const currentFourWeekEnd = addDays(currentPeriodStart, 27);
 
     return teamMembers
-      .filter((person) => person.id !== "jt")
       .map((person) => {
         const personBookings = bookings.filter(
-          (booking) => booking.assigned_to === person.id || booking.assistant_assigned_to === person.id
+          (b) => b.assigned_to === person.id || b.assistant_assigned_to === person.id
         );
-
         const shownWeekHours = sumHoursInRange(personBookings, overviewWeekStart, shownWeekEnd);
         const currentWeekHours = sumHoursInRange(personBookings, currentPeriodStart, currentWeekEnd);
         const currentFortnightHours = sumHoursInRange(personBookings, currentPeriodStart, currentFortnightEnd);
         const currentFourWeekHours = sumHoursInRange(personBookings, currentPeriodStart, currentFourWeekEnd);
-
-        const projectsLed = projects.filter((project) => project.primary_surveyor_id === person.id).sort(projectSort);
-
+        const currentMonthHours = sumHoursInRange(personBookings, currentMonthStart, currentMonthEnd);
         return {
           ...person,
           bookings: personBookings,
@@ -247,63 +229,71 @@ export default function App() {
           currentWeekHours,
           currentFortnightHours,
           currentFourWeekHours,
+          currentMonthHours,
           shownWeekPercent: calcLoadPercent(shownWeekHours, person, 1),
           currentWeekPercent: calcLoadPercent(currentWeekHours, person, 1),
           currentFortnightPercent: calcLoadPercent(currentFortnightHours, person, 2),
           currentFourWeekPercent: calcLoadPercent(currentFourWeekHours, person, 4),
-          projectsLed,
+          currentMonthPercent: calcLoadPercent(currentMonthHours, person, currentMonthWeeks),
+          projectsLed: projects.filter((p) => p.primary_surveyor_id === person.id).sort(projectSort),
         };
       })
       .sort((a, b) => a.name.localeCompare(b.name));
-  }, [bookings, overviewWeekStart, projects, currentPeriodStart]);
+  }, [bookings, overviewWeekStart, projects, currentPeriodStart, currentMonthStart, currentMonthEnd, currentMonthWeeks, teamMembers]);
 
-  const selectedPerson = allWeeksLoad.find((person) => person.id === selectedPersonId) || allWeeksLoad[0];
-  const selectedProject = projectGroups.find((project) => project.id === selectedProjectId) || projectGroups[0];
+  const selectedPerson = allWeeksLoad.find((p) => p.id === selectedPersonId) || allWeeksLoad[0];
 
   const suggestionCards = useMemo(() => {
-    const redPeople = allWeeksLoad.filter((person) => person.shownWeekPercent > 100);
-    const lightBluePeople = allWeeksLoad.filter((person) => person.shownWeekPercent < 71);
+    const redPeople = allWeeksLoad.filter((p) => p.shownWeekPercent > 100);
+    const lightPeople = allWeeksLoad.filter((p) => p.shownWeekPercent < 71);
+    const weekEnd = addDays(overviewWeekStart, 6);
 
     return redPeople
       .map((person) => {
-        const weekEnd = addDays(overviewWeekStart, 6);
         const candidateBookings = bookings
-          .filter(
-            (booking) =>
-              booking.assigned_to === person.id &&
-              parseDate(booking.date) >= overviewWeekStart &&
-              parseDate(booking.date) <= weekEnd
-          )
-          .sort((a, b) => parseDate(a.date) - parseDate(b.date));
+          .filter((b) => {
+            const d = new Date(`${b.date}T00:00:00`);
+            return b.assigned_to === person.id && d >= overviewWeekStart && d <= weekEnd;
+          })
+          .sort((a, b) => new Date(`${a.date}T00:00:00`) - new Date(`${b.date}T00:00:00`));
 
         let best = null;
-
         candidateBookings.forEach((booking) => {
-          lightBluePeople.forEach((target) => {
+          lightPeople.forEach((target) => {
             if (target.id === person.id) return;
-
             const newSourcePct = calcLoadPercent(person.shownWeekHours - Number(booking.hours || 0), person, 1);
             const newTargetPct = calcLoadPercent(target.shownWeekHours + Number(booking.hours || 0), target, 1);
             const score = Math.abs(newSourcePct - 85) + Math.abs(newTargetPct - 85);
-
             if (!best || score < best.score) {
-              best = {
-                source: person,
-                booking,
-                target,
-                newSourcePct,
-                newTargetPct,
-                score,
-              };
+              best = { source: person, booking, target, newSourcePct, newTargetPct, score };
             }
           });
         });
-
         return best;
       })
       .filter(Boolean)
       .sort((a, b) => a.score - b.score);
   }, [allWeeksLoad, bookings, overviewWeekStart]);
+
+  // --- Event handlers ---
+
+  function openBookingModal(personId, dateKey) {
+    setEditingBookingId(null);
+    setBookingMessage({ text: "", isError: false });
+    setNewBooking((cur) => ({
+      ...EMPTY_BOOKING,
+      assigned_to: personId || cur.assigned_to,
+      date: dateKey || cur.date,
+    }));
+    setBookingModal({ open: true, date: dateKey || "", personId: personId || "" });
+  }
+
+  function closeBookingModal() {
+    setBookingModal({ open: false, date: "", personId: "" });
+    setEditingBookingId(null);
+    setBookingMessage({ text: "", isError: false });
+    setNewBooking({ ...EMPTY_BOOKING, assigned_to: teamMembers[0]?.id || FIRST_MEMBER_ID });
+  }
 
   async function moveBooking(bookingId, nextPersonId, nextDate) {
     const { error } = await supabase
@@ -312,241 +302,417 @@ export default function App() {
       .eq("id", bookingId);
 
     if (error) {
-      console.error(error);
+      setGlobalError(`Could not move booking: ${error.message}`);
       return;
     }
-
-    await loadAllData();
-  }
-
-  async function applySuggestion(item) {
-    await moveBooking(item.booking.id, item.target.id, item.booking.date);
+    setBookings((cur) =>
+      cur.map((b) => b.id === bookingId ? { ...b, assigned_to: nextPersonId, date: nextDate } : b)
+    );
   }
 
   async function saveProjectDetails() {
     if (!selectedProjectId) return;
-
     if (!projectDraft.number.trim() || !projectDraft.name.trim() || !projectDraft.primary_surveyor_id) {
-      setProjectSaveMessage("Please fill in all project details first.");
+      setProjectSaveMessage({ text: "Please fill in all project details first.", isError: true });
       return;
     }
-
+    // MV7: prevent duplicate project numbers
+    const duplicate = projects.find((p) => p.id !== selectedProjectId && String(p.number) === String(projectDraft.number).trim());
+    if (duplicate) {
+      setProjectSaveMessage({ text: `Project number ${projectDraft.number} is already used by "${duplicate.name}".`, isError: true });
+      return;
+    }
+    setSavingProject(true);
     const { error } = await supabase
       .from("projects")
       .update({
         number: projectDraft.number,
         name: projectDraft.name,
         primary_surveyor_id: projectDraft.primary_surveyor_id,
+        comments: projectDraft.comments,
+        completed: projectDraft.completed,
       })
       .eq("id", selectedProjectId);
+    setSavingProject(false);
 
     if (error) {
-      console.error(error);
-      setProjectSaveMessage("Could not save project details.");
+      setProjectSaveMessage({ text: `Could not save: ${error.message}`, isError: true });
       return;
     }
-
-    setProjectSaveMessage("Project details saved.");
-    await loadAllData();
+    setProjectSaveMessage({ text: "Project details saved.", isError: false });
+    setProjects((cur) => cur.map((p) => p.id === selectedProjectId ? { ...p, ...projectDraft } : p));
   }
 
   async function saveProjectTask(taskId) {
     const draft = taskDrafts[taskId];
     if (!draft) return;
-
     if (!draft.title.trim() || !draft.assigned_to || !draft.due_date || !draft.status) {
-      setTaskSaveMessage("Please complete all task fields before saving.");
+      setTaskSaveMessage({ text: "Please complete all task fields before saving.", isError: true });
       return;
     }
-
+    setSavingTask(true);
     const { error } = await supabase
       .from("project_tasks")
-      .update({
-        title: draft.title,
-        assigned_to: draft.assigned_to,
-        due_date: draft.due_date,
-        status: draft.status,
-      })
+      .update({ title: draft.title, assigned_to: draft.assigned_to, due_date: draft.due_date, status: draft.status })
       .eq("id", taskId);
+    setSavingTask(false);
 
     if (error) {
-      console.error(error);
-      setTaskSaveMessage("Could not save task.");
+      setTaskSaveMessage({ text: `Could not save task: ${error.message}`, isError: true });
       return;
     }
+    setTaskSaveMessage({ text: "Task saved.", isError: false });
+    const updatedTasks = projectTasks.map((t) => t.id === taskId ? { ...t, ...draft } : t);
+    setProjectTasks(updatedTasks);
 
-    setTaskSaveMessage("Task saved.");
-    await loadAllData();
+    // Auto-reactivate project if any task is now non-Complete
+    const task = projectTasks.find((t) => t.id === taskId);
+    if (task && draft.status !== "Complete") {
+      const project = projects.find((p) => p.id === task.project_id);
+      if (project?.completed) {
+        await supabase.from("projects").update({ completed: false }).eq("id", project.id);
+        setProjects((cur) => cur.map((p) => p.id === project.id ? { ...p, completed: false } : p));
+      }
+    }
   }
 
   async function deleteProject(projectId) {
+    const project = projects.find((p) => p.id === projectId);
+    if (!window.confirm(`Delete project "${project?.name || projectId}"? This cannot be undone.`)) return;
+    setSavingProject(true);
     const { error } = await supabase.from("projects").delete().eq("id", projectId);
+    setSavingProject(false);
+
     if (error) {
-      console.error(error);
+      setGlobalError(`Could not delete project: ${error.message}`);
       return;
     }
-    await loadAllData();
+    const remaining = projects.filter((p) => p.id !== projectId);
+    setProjects(remaining);
+    setProjectTasks((cur) => cur.filter((t) => t.project_id !== projectId));
+    setSelectedProjectId(remaining.length ? remaining[0].id : null);
   }
 
   async function deleteProjectTask(taskId) {
+    const task = projectTasks.find((t) => t.id === taskId);
+    if (!window.confirm(`Delete task "${task?.title || taskId}"?`)) return;
+    setSavingTask(true);
     const { error } = await supabase.from("project_tasks").delete().eq("id", taskId);
+    setSavingTask(false);
+
     if (error) {
-      console.error(error);
+      setGlobalError(`Could not delete task: ${error.message}`);
       return;
     }
-    await loadAllData();
+    setProjectTasks((cur) => cur.filter((t) => t.id !== taskId));
+    setTaskDrafts((cur) => { const next = { ...cur }; delete next[taskId]; return next; });
   }
 
   async function createProject() {
-    const nextNum = 24000 + projects.length + 1;
-    const leadId = teamMembers.find((p) => p.id !== "jt")?.id || "s1";
+    const maxNum = projects.reduce((max, p) => { const n = parseInt(p.number, 10); return isNaN(n) ? max : Math.max(max, n); }, 24000);
+    const nextNum = maxNum + 1;
+    const leadId = teamMembers[0]?.id || "s1";
     const projectId = makeId("p");
     const firstTaskId = makeId("pt");
+    const taskDueDate = ymd(addDays(new Date(), 3));
 
+    setSavingProject(true);
     const { error: projectError } = await supabase.from("projects").insert({
       id: projectId,
       number: String(nextNum),
       name: `New Project ${projects.length + 1}`,
-      deadline: ymd(addDays(new Date(), 14)),
       primary_surveyor_id: leadId,
+      completed: false,
+      comments: "",
     });
 
     if (projectError) {
-      console.error(projectError);
-      setProjectSaveMessage(`Could not add project: ${projectError.message}`);
+      setSavingProject(false);
+      setProjectSaveMessage({ text: `Could not add project: ${projectError.message}`, isError: true });
       return;
     }
+
+    const newProject = {
+      id: projectId, number: String(nextNum), name: `New Project ${projects.length + 1}`,
+      primary_surveyor_id: leadId, completed: false, comments: "",
+    };
 
     const { error: taskError } = await supabase.from("project_tasks").insert({
-      id: firstTaskId,
-      title: "Initial task",
-      project_id: projectId,
-      assigned_to: leadId,
-      due_date: ymd(addDays(new Date(), 3)),
-      status: "Coming",
+      id: firstTaskId, title: "Initial task", project_id: projectId,
+      assigned_to: leadId, due_date: taskDueDate, status: "To Do",
     });
+    setSavingProject(false);
+
+    const newTask = {
+      id: firstTaskId, title: "Initial task", project_id: projectId,
+      assigned_to: leadId, due_date: taskDueDate, status: "To Do",
+    };
 
     if (taskError) {
-      console.error(taskError);
-      setProjectSaveMessage(`Project created, but first task failed: ${taskError.message}`);
-      await loadAllData();
-      setSelectedProjectId(projectId);
+      setProjectSaveMessage({ text: `Project created, but first task failed: ${taskError.message}`, isError: true });
+    } else {
+      setProjectTasks((cur) => [...cur, newTask]);
+      setProjectSaveMessage({ text: "New project created.", isError: false });
+    }
+    setProjects((cur) => [...cur, newProject]);
+    setSelectedProjectId(projectId);
+    setTimeout(() => setProjectDraft({ number: "", name: "", primary_surveyor_id: leadId, comments: "", completed: false }), 0);
+    setTab("projects");
+  }
+
+  // Change #13: create project for a specific person, return to person tab
+  async function createProjectForPerson(leadId) {
+    const maxNum = projects.reduce((max, p) => { const n = parseInt(p.number, 10); return isNaN(n) ? max : Math.max(max, n); }, 24000);
+    const nextNum = maxNum + 1;
+    const projectId = makeId("p");
+    const firstTaskId = makeId("pt");
+    const taskDueDate = ymd(addDays(new Date(), 3));
+
+    setSavingProject(true);
+    const { error: projectError } = await supabase.from("projects").insert({
+      id: projectId,
+      number: String(nextNum),
+      name: `New Project ${projects.length + 1}`,
+      primary_surveyor_id: leadId,
+      completed: false,
+      comments: "",
+    });
+
+    if (projectError) {
+      setSavingProject(false);
+      setGlobalError(`Could not add project: ${projectError.message}`);
       return;
     }
 
-    await loadAllData();
+    const newProject = {
+      id: projectId, number: String(nextNum), name: `New Project ${projects.length + 1}`,
+      primary_surveyor_id: leadId, completed: false, comments: "",
+    };
+
+    const { error: taskError } = await supabase.from("project_tasks").insert({
+      id: firstTaskId, title: "Initial task", project_id: projectId,
+      assigned_to: leadId, due_date: taskDueDate, status: "To Do",
+    });
+    setSavingProject(false);
+
+    const newTask = {
+      id: firstTaskId, title: "Initial task", project_id: projectId,
+      assigned_to: leadId, due_date: taskDueDate, status: "To Do",
+    };
+
+    if (!taskError) setProjectTasks((cur) => [...cur, newTask]);
+    setProjects((cur) => [...cur, newProject]);
     setSelectedProjectId(projectId);
-    setProjectSaveMessage("New project created.");
+    setTimeout(() => setProjectDraft({ number: "", name: "", primary_surveyor_id: leadId, comments: "", completed: false }), 0);
+    setTab("person");
   }
 
   async function addProjectTask() {
+    const selectedProject = projectGroups.find((p) => p.id === selectedProjectId);
     if (!selectedProject) return;
 
-    const { error } = await supabase.from("project_tasks").insert({
-      id: makeId("pt"),
+    const taskId = makeId("pt");
+    const newTask = {
+      id: taskId,
       title: `New task ${selectedProject.tasks.length + 1}`,
       project_id: selectedProject.id,
       assigned_to: selectedProject.primary_surveyor_id,
-      due_date: selectedProject.deadline,
-      status: "Coming",
-    });
+      due_date: ymd(addDays(new Date(), 7)),
+      status: "To Do",
+    };
+
+    setSavingTask(true);
+    const { error } = await supabase.from("project_tasks").insert(newTask);
+    setSavingTask(false);
 
     if (error) {
-      console.error(error);
-      setTaskSaveMessage(`Could not add task: ${error.message}`);
+      setTaskSaveMessage({ text: `Could not add task: ${error.message}`, isError: true });
       return;
     }
+    setProjectTasks((cur) => [...cur, newTask]);
+    setTaskDrafts((cur) => ({
+      ...cur,
+      [taskId]: { title: newTask.title, assigned_to: newTask.assigned_to, due_date: newTask.due_date, status: newTask.status },
+    }));
+    setTaskSaveMessage({ text: "New task added.", isError: false });
+  }
 
-    setTaskSaveMessage("New task added.");
-    await loadAllData();
+  // Change #12: complete a task, cascade to next task and optionally close project
+  async function completeTask(taskId) {
+    const task = projectTasks.find((t) => t.id === taskId);
+    if (!task) return;
+
+    const { error: completeError } = await supabase
+      .from("project_tasks").update({ status: "Complete" }).eq("id", taskId);
+    if (completeError) {
+      setGlobalError(`Could not complete task: ${completeError.message}`);
+      return;
+    }
+    const updatedTasks = projectTasks.map((t) =>
+      t.id === taskId ? { ...t, status: "Complete" } : t
+    );
+    setProjectTasks(updatedTasks);
+
+    const projectId = task.project_id;
+    const relatedTasks = updatedTasks.filter((t) => t.project_id === projectId);
+    const allComplete = relatedTasks.every((t) => t.status === "Complete");
+
+    if (allComplete) {
+      const { error: projError } = await supabase
+        .from("projects").update({ completed: true }).eq("id", projectId);
+      if (projError) {
+        setGlobalError(`Task completed, but could not close project: ${projError.message}`);
+        return;
+      }
+      setProjects((cur) => cur.map((p) => p.id === projectId ? { ...p, completed: true } : p));
+    } else {
+      const nextTodo = relatedTasks
+        .filter((t) => t.status === "To Do")
+        .sort((a, b) => new Date(`${a.due_date}T00:00:00`) - new Date(`${b.due_date}T00:00:00`))[0];
+      if (nextTodo) {
+        const { error: nextError } = await supabase
+          .from("project_tasks").update({ status: "WIP" }).eq("id", nextTodo.id);
+        if (!nextError) {
+          setProjectTasks((cur) =>
+            cur.map((t) => t.id === nextTodo.id ? { ...t, status: "WIP" } : t)
+          );
+        }
+      }
+    }
   }
 
   async function createOrSaveBooking() {
-    setBookingMessage("");
+    setBookingMessage({ text: "", isError: false });
 
     if (!newBooking.title.trim()) {
-      setBookingMessage("Please enter a booking title.");
+      setBookingMessage({ text: "Please enter a booking title.", isError: true });
+      return;
+    }
+    const hours = Number(newBooking.hours);
+    if (isNaN(hours) || hours <= 0) {
+      setBookingMessage({ text: "Please enter a valid number of hours.", isError: true });
+      return;
+    }
+    if (!newBooking.date) {
+      setBookingMessage({ text: "Please select a date.", isError: true });
       return;
     }
 
+    // Normalise assistant: "other:Name" → "Name", "other:" (blank) → null, "" → null
+    const rawAssistant = newBooking.assistant_assigned_to || "";
+    const assistantValue = rawAssistant.startsWith("other:")
+      ? rawAssistant.slice(6).trim() || null
+      : rawAssistant || null;
+
     const payload = {
-      ...newBooking,
-      hours: Number(newBooking.hours),
-      assistant_assigned_to: newBooking.assistant_assigned_to || null,
+      title: newBooking.title,
+      type: newBooking.type,
+      date: newBooking.date,
+      assigned_to: newBooking.assigned_to,
+      assistant_assigned_to: assistantValue,
+      hours,
       tentative: newBooking.type === "Field" ? newBooking.tentative : false,
+      linked_project_id: newBooking.linked_project_id || null,
+      linked_task_id: newBooking.linked_task_id || null,
     };
 
+    setSavingBooking(true);
     if (editingBookingId) {
       const { error } = await supabase.from("bookings").update(payload).eq("id", editingBookingId);
+      setSavingBooking(false);
       if (error) {
-        console.error(error);
-        setBookingMessage(`Could not save booking: ${error.message}`);
+        setBookingMessage({ text: `Could not save booking: ${error.message}`, isError: true });
         return;
       }
-      setBookingMessage("Booking saved.");
+      setBookingMessage({ text: "Booking saved.", isError: false });
+      setBookings((cur) => cur.map((b) => b.id === editingBookingId ? { ...b, ...payload } : b));
     } else {
-      const { error } = await supabase.from("bookings").insert({
-        id: makeId("b"),
-        ...payload,
-      });
+      const id = makeId("b");
+      const { error } = await supabase.from("bookings").insert({ id, ...payload });
+      setSavingBooking(false);
       if (error) {
-        console.error(error);
-        setBookingMessage(`Could not add booking: ${error.message}`);
+        setBookingMessage({ text: `Could not add booking: ${error.message}`, isError: true });
         return;
       }
-      setBookingMessage("Booking added.");
+      setBookingMessage({ text: "Booking added.", isError: false });
+      setBookings((cur) => [...cur, { id, ...payload }]);
     }
-
     setEditingBookingId(null);
-    setNewBooking((current) => ({
-      ...current,
-      title: "",
-      hours: 4,
-      assistant_assigned_to: "",
-      tentative: false,
-    }));
-
-    await loadAllData();
+    // Close modal after successful save
+    setTimeout(() => closeBookingModal(), 600);
   }
 
   function editBooking(booking) {
     setEditingBookingId(booking.id);
-    setBookingMessage("");
+    setBookingMessage({ text: "", isError: false });
+    const raw = booking.assistant_assigned_to || "";
+    // If the stored value isn't a known member ID, treat it as a free-text "Other" name
+    const isKnownMember = teamMembers.some((m) => m.id === raw);
+    const assistantField = raw === "" || isKnownMember ? raw : `other:${raw}`;
     setNewBooking({
       title: booking.title,
       type: booking.type,
       date: booking.date,
       assigned_to: booking.assigned_to,
-      assistant_assigned_to: booking.assistant_assigned_to || "",
+      assistant_assigned_to: assistantField,
       hours: booking.hours,
       tentative: booking.tentative,
+      linked_project_id: booking.linked_project_id || "",
+      linked_task_id: booking.linked_task_id || "",
     });
-    setTab("new");
+    setBookingModal({ open: true, date: booking.date, personId: booking.assigned_to });
   }
 
   async function deleteBooking() {
     if (!editingBookingId) return;
-
+    setSavingBooking(true);
     const { error } = await supabase.from("bookings").delete().eq("id", editingBookingId);
+    setSavingBooking(false);
+
     if (error) {
-      console.error(error);
+      setBookingMessage({ text: `Could not delete booking: ${error.message}`, isError: true });
       return;
     }
-
+    setBookings((cur) => cur.filter((b) => b.id !== editingBookingId));
     setEditingBookingId(null);
-    setBookingMessage("Booking deleted.");
-    setNewBooking({
-      title: "",
-      type: "Office",
-      date: ymd(new Date()),
-      assigned_to: teamMembers[0].id,
-      assistant_assigned_to: "",
-      hours: 4,
-      tentative: false,
-    });
+    setBookingMessage({ text: "Booking deleted.", isError: false });
+    setTimeout(() => closeBookingModal(), 600);
+  }
 
-    await loadAllData();
-    setTab("new");
+  async function deleteProjectNote(noteId) {
+    if (!window.confirm("Delete this note?")) return;
+    const { error } = await supabase.from("project_notes").delete().eq("id", noteId);
+    if (error) {
+      setGlobalError(`Could not delete note: ${error.message}`);
+      return;
+    }
+    setProjectNotes((cur) => cur.filter((n) => n.id !== noteId));
+  }
+
+  async function editProjectNote(noteId, content) {
+    const { error } = await supabase.from("project_notes").update({ content }).eq("id", noteId);
+    if (error) {
+      setGlobalError(`Could not update note: ${error.message}`);
+      return;
+    }
+    setProjectNotes((cur) => cur.map((n) => n.id === noteId ? { ...n, content } : n));
+  }
+
+  // Change #10: save project note
+  async function saveProjectNote(projectId, content) {
+    const id = makeId("pn");
+    const { error, data } = await supabase
+      .from("project_notes")
+      .insert({ id, project_id: projectId, content })
+      .select()
+      .single();
+
+    if (error) {
+      setGlobalError(`Could not save note: ${error.message}`);
+      return;
+    }
+    const note = data || { id, project_id: projectId, content, created_at: new Date().toISOString() };
+    setProjectNotes((cur) => [...cur, note]);
   }
 
   function goToProject(projectId) {
@@ -554,11 +720,9 @@ export default function App() {
     setTab("projects");
   }
 
-  const monthGrid = getMonthGrid(calendarMonth);
-  const selectedMonthIndex = calendarMonth.getMonth();
   const week = Array.from({ length: 7 }, (_, i) => addDays(overviewWeekStart, i));
+  const monthGrid = getMonthGrid(calendarMonth);
   const personMonthGrid = getMonthGrid(personMonth);
-  const personMonthIndex = personMonth.getMonth();
 
   if (loading) {
     return (
@@ -569,691 +733,154 @@ export default function App() {
   }
 
   return (
-    <div style={{ minHeight: "100vh", background: "#f8fafc", padding: 24, fontFamily: "Inter, Arial, sans-serif", color: "#0f172a" }}>
-      <div style={{ maxWidth: 1480, margin: "0 auto", display: "grid", gap: 20 }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <div style={{ fontSize: 30, fontWeight: 800 }}>K Team Workload Manager</div>
+    <div style={{ minHeight: "100vh", background: "#f1f5f9", fontFamily: "Inter, system-ui, Arial, sans-serif", color: "#0f172a" }}>
+      {/* Top header bar */}
+      <div style={{ background: "white", borderBottom: "1px solid #e5e7eb", padding: "0 32px" }}>
+        <div style={{ maxWidth: 1480, margin: "0 auto", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 16 }}>
+          <div style={{ fontSize: 60, fontWeight: 800, letterSpacing: "-1px", padding: "8px 0" }}>K Team Workload Manager</div>
+          <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+            <img src="/images/kteam-logo.png" alt="K Team" style={{ height: 192, objectFit: "contain" }} />
+            <img src="/images/everest-shield.png" alt="Everest Shield" style={{ height: 192, objectFit: "contain" }} />
+          </div>
         </div>
+      </div>
 
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-          {[["overview", "Overview"], ["projects", "Projects"], ["calendar", "Calendar"], ["new", "Add Booking"]].map(([key, label]) => (
+      {/* Nav bar */}
+      <div style={{ background: "white", borderBottom: "1px solid #e5e7eb", padding: "0 32px" }}>
+        <div style={{ maxWidth: 1480, margin: "0 auto", display: "flex", gap: 0 }}>
+          {[["overview", "Overview"], ["projects", "Projects"], ["calendar", "Calendar"]].map(([key, label]) => (
             <button
               key={key}
               onClick={() => setTab(key)}
               style={{
-                border: "1px solid #cbd5e1",
-                background: tab === key ? "#0f172a" : "white",
-                color: tab === key ? "white" : "#0f172a",
-                borderRadius: 14,
-                padding: "10px 16px",
-                fontWeight: 600,
+                border: 0,
+                borderBottom: tab === key ? "3px solid #0f172a" : "3px solid transparent",
+                background: "transparent",
+                color: tab === key ? "#0f172a" : "#64748b",
+                padding: "14px 20px",
+                fontWeight: 700,
+                fontSize: 14,
                 cursor: "pointer",
+                transition: "color 0.15s",
               }}
             >
               {label}
             </button>
           ))}
         </div>
+      </div>
+
+      <div style={{ maxWidth: 1480, margin: "0 auto", padding: "24px 32px", display: "grid", gap: 0 }}>
+
+        {globalError && (
+          <div style={{ background: "#fee2e2", border: "1px solid #fca5a5", borderRadius: 12, padding: "12px 16px", color: "#991b1b", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 20 }}>
+            <span style={{ fontSize: 14 }}>{globalError}</span>
+            <button onClick={() => setGlobalError("")} style={{ border: 0, background: "transparent", cursor: "pointer", fontWeight: 700, color: "#991b1b", fontSize: 18, lineHeight: 1, flexShrink: 0 }}>✕</button>
+          </div>
+        )}
 
         {tab === "overview" && (
-          <div style={{ display: "grid", gap: 16 }}>
-            <div style={cardStyle()}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
-                <div>
-                  <div style={{ fontSize: 22, fontWeight: 700 }}>Weekly Calendar</div>
-                  <div style={{ color: "#64748b", marginTop: 4 }}>{formatDate(ymd(week[0]))} to {formatDate(ymd(week[6]))}</div>
-                </div>
-                <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                  <button onClick={() => setOverviewWeekStart((current) => addDays(current, -7))} style={{ border: "1px solid #cbd5e1", background: "white", borderRadius: 12, padding: "10px 14px", cursor: "pointer" }}>Prev Week</button>
-                  <button onClick={() => setOverviewWeekStart(startOfWeek(new Date()))} style={{ border: "1px solid #cbd5e1", background: "white", borderRadius: 12, padding: "10px 14px", cursor: "pointer" }}>This Week</button>
-                  <button onClick={() => setOverviewWeekStart((current) => addDays(current, 7))} style={{ border: "1px solid #cbd5e1", background: "white", borderRadius: 12, padding: "10px 14px", cursor: "pointer" }}>Next Week</button>
-                </div>
-              </div>
-
-              <div style={{ overflowX: "auto" }}>
-                <div style={{ display: "grid", gridTemplateColumns: "220px repeat(7, minmax(150px, 1fr))", gap: 8, minWidth: 1320 }}>
-                  <div style={{ padding: 12, fontWeight: 700 }}>Surveyor</div>
-                  {week.map((date) => (
-                    <div key={ymd(date)} style={{ padding: 12, fontWeight: 700, background: "#f1f5f9", borderRadius: 12 }}>
-                      {formatDate(ymd(date))}
-                    </div>
-                  ))}
-
-                  {allWeeksLoad.map((person) => (
-                    <React.Fragment key={person.id}>
-                      <button
-                        onClick={() => {
-                          setSelectedPersonId(person.id);
-                          setTab("person");
-                        }}
-                        style={{ padding: 12, border: "1px solid #e5e7eb", borderRadius: 12, fontWeight: 700, textAlign: "left", background: "white", cursor: "pointer" }}
-                      >
-                        {person.name} <span style={{ color: loadColor(person.shownWeekPercent) }}>({person.shownWeekPercent}%)</span>
-                      </button>
-
-                      {week.map((date) => {
-                        const dateKey = ymd(date);
-                        const dayBookings = bookings
-                          .filter(
-                            (booking) =>
-                              booking.date === dateKey &&
-                              (booking.assigned_to === person.id || booking.assistant_assigned_to === person.id)
-                          )
-                          .sort((a, b) => a.title.localeCompare(b.title));
-
-                        return (
-                          <div
-                            key={`${person.id}-${dateKey}`}
-                            onDragOver={(e) => e.preventDefault()}
-                            onDrop={() => {
-                              if (draggedBookingId) moveBooking(draggedBookingId, person.id, dateKey);
-                              setDraggedBookingId(null);
-                            }}
-                            onClick={() => {
-                              setEditingBookingId(null);
-                              setBookingMessage("");
-                              setNewBooking((current) => ({ ...current, assigned_to: person.id, assistant_assigned_to: "", date: dateKey }));
-                              setTab("new");
-                            }}
-                            style={{ minHeight: 100, padding: 10, border: "1px solid #e5e7eb", borderRadius: 12, background: "#ffffff", cursor: "pointer" }}
-                          >
-                            <div style={{ display: "grid", gap: 8 }}>
-                              {dayBookings.map((booking) => {
-                                const isAssistant = booking.assistant_assigned_to === person.id;
-                                return (
-                                  <div
-                                    key={`${booking.id}-${person.id}`}
-                                    draggable={!isAssistant}
-                                    onDragStart={(e) => {
-                                      if (isAssistant) return;
-                                      e.stopPropagation();
-                                      setDraggedBookingId(booking.id);
-                                    }}
-                                    onDragEnd={() => setDraggedBookingId(null)}
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      editBooking(booking);
-                                    }}
-                                    style={{ borderRadius: 10, padding: 8, background: bookingColor(booking), cursor: isAssistant ? "pointer" : "grab", opacity: isAssistant ? 0.9 : 1 }}
-                                  >
-                                    <div style={{ fontWeight: 700, fontSize: 13 }}>{booking.title}</div>
-                                    <div style={{ fontSize: 12 }}>{booking.type} · {booking.hours}h{isAssistant ? " · Assistant" : ""}</div>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </React.Fragment>
-                  ))}
-                </div>
-              </div>
-
-              <div style={{ display: "flex", gap: 16, marginTop: 12, fontSize: 13, color: "#475569" }}>
-                <div><span style={{ display: "inline-block", width: 12, height: 12, background: "#dbeafe", borderRadius: 3, marginRight: 6 }} />Office</div>
-                <div><span style={{ display: "inline-block", width: 12, height: 12, background: "#ffedd5", borderRadius: 3, marginRight: 6 }} />Field</div>
-                <div><span style={{ display: "inline-block", width: 12, height: 12, background: "#fecaca", borderRadius: 3, marginRight: 6 }} />Tentative Field</div>
-              </div>
-            </div>
-
-            <div style={cardStyle()}>
-              <div style={{ fontSize: 22, fontWeight: 700, marginBottom: 16 }}>Team Overview</div>
-              <div style={{ display: "grid", gap: 12 }}>
-                {allWeeksLoad.map((person) => (
-                  <div key={person.id} style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 16 }}>
-                    <div style={{ display: "grid", gridTemplateColumns: "220px 1fr 1fr 1fr", gap: 16, alignItems: "start" }}>
-                      <button
-                        onClick={() => {
-                          setSelectedPersonId(person.id);
-                          setTab("person");
-                        }}
-                        style={{ border: 0, background: "transparent", padding: 0, textAlign: "left", fontWeight: 700, fontSize: 18, cursor: "pointer", color: "#0f172a" }}
-                      >
-                        {person.name}
-                      </button>
-
-                      <div>
-                        <div style={{ fontSize: 13, color: "#64748b", marginBottom: 4 }}>Current week</div>
-                        <div style={{ color: loadColor(person.currentWeekPercent), fontWeight: 800, fontSize: 24 }}>{person.currentWeekPercent}%</div>
-                        <div style={{ fontSize: 12, color: "#64748b" }}>
-                          {person.currentWeekHours}h / {(person.targetCapacity || person.weeklyCapacity)}h
-                        </div>
-                      </div>
-
-                      <div>
-                        <div style={{ fontSize: 13, color: "#64748b", marginBottom: 4 }}>Current fortnight</div>
-                        <div style={{ color: loadColor(person.currentFortnightPercent), fontWeight: 800, fontSize: 24 }}>{person.currentFortnightPercent}%</div>
-                        <div style={{ fontSize: 12, color: "#64748b" }}>
-                          {person.currentFortnightHours}h / {(person.targetCapacity || person.weeklyCapacity) * 2}h
-                        </div>
-                      </div>
-
-                      <div>
-                        <div style={{ fontSize: 13, color: "#64748b", marginBottom: 4 }}>Current 4 weeks</div>
-                        <div style={{ color: loadColor(person.currentFourWeekPercent), fontWeight: 800, fontSize: 24 }}>{person.currentFourWeekPercent}%</div>
-                        <div style={{ fontSize: 12, color: "#64748b" }}>
-                          {person.currentFourWeekHours}h / {(person.targetCapacity || person.weeklyCapacity) * 4}h
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div style={cardStyle()}>
-              <div style={{ fontSize: 22, fontWeight: 700, marginBottom: 16 }}>Suggested Rebalancing</div>
-              <div style={{ display: "grid", gap: 12 }}>
-                {suggestionCards.length === 0 && <div style={{ color: "#64748b" }}>No rebalancing suggested right now.</div>}
-                {suggestionCards.map((item) => (
-                  <button key={item.source.id + item.booking.id} onClick={() => applySuggestion(item)} style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 16, background: "white", cursor: "pointer", textAlign: "left" }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", marginBottom: 8 }}>
-                      <div style={{ fontWeight: 700 }}>Move {item.booking.title}</div>
-                      <span style={{ borderRadius: 999, padding: "4px 8px", fontSize: 12, fontWeight: 700, background: "#f3f4f6", color: "#374151" }}>{item.booking.type}</span>
-                    </div>
-                    <div style={{ fontSize: 14, color: "#475569", display: "grid", gap: 4 }}>
-                      <div><strong>Suggestion:</strong> {item.source.name} → {item.target.name}</div>
-                      <div><strong>Effect:</strong> {item.source.name} {item.source.shownWeekPercent}% to {item.newSourcePct}%, {item.target.name} {item.target.shownWeekPercent}% to {item.newTargetPct}%</div>
-                      <div style={{ marginTop: 8, color: "#0f172a", fontWeight: 600 }}>Click to apply suggestion</div>
-                    </div>
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
+          <OverviewTab
+            week={week}
+            allWeeksLoad={allWeeksLoad}
+            bookings={bookings}
+            overviewWeekStart={overviewWeekStart}
+            draggedBookingId={draggedBookingId}
+            suggestionCards={suggestionCards}
+            onPrevWeek={() => setOverviewWeekStart((cur) => addDays(cur, -7))}
+            onNextWeek={() => setOverviewWeekStart((cur) => addDays(cur, 7))}
+            onThisWeek={() => setOverviewWeekStart(startOfWeek(new Date()))}
+            onDragStart={setDraggedBookingId}
+            onDragEnd={() => setDraggedBookingId(null)}
+            onMoveBooking={moveBooking}
+            onEditBooking={editBooking}
+            onAddBookingForPersonDate={(personId, dateKey) => openBookingModal(personId, dateKey)}
+            onSelectPerson={(personId) => { setSelectedPersonId(personId); setTab("person"); }}
+            onApplySuggestion={(item) => moveBooking(item.booking.id, item.target.id, item.booking.date)}
+          />
         )}
 
         {tab === "projects" && (
-          <div style={{ display: "grid", gridTemplateColumns: "320px 1fr", gap: 16 }}>
-            <div style={cardStyle()}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 16 }}>
-                <div style={{ fontSize: 22, fontWeight: 700 }}>Projects</div>
-                <button onClick={createProject} style={{ border: "1px solid #cbd5e1", background: "white", borderRadius: 12, padding: "8px 12px", cursor: "pointer", fontWeight: 600 }}>New</button>
-              </div>
-              <div style={{ display: "grid", gap: 10 }}>
-                {projectGroups.map((project) => {
-                  const completeCount = project.tasks.filter((task) => task.status === "Complete").length;
-                  const progress = project.tasks.length ? Math.round((completeCount / project.tasks.length) * 100) : 0;
-                  return (
-                    <button key={project.id} onClick={() => setSelectedProjectId(project.id)} style={{ textAlign: "left", border: selectedProjectId === project.id ? "2px solid #0f172a" : "1px solid #e5e7eb", background: "white", borderRadius: 16, padding: 14, cursor: "pointer" }}>
-                      <div style={{ fontWeight: 700 }}>{project.number} — {project.name}</div>
-                      <div style={{ color: "#475569", fontSize: 13, marginTop: 8 }}>{project.tasks.length} tasks · {progress}% complete</div>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            <div style={{ display: "grid", gap: 16 }}>
-              {selectedProject && (
-                <>
-                  <div style={cardStyle()}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 16 }}>
-                      <div style={{ fontSize: 22, fontWeight: 700 }}>Project Details</div>
-                      <button onClick={() => deleteProject(selectedProject.id)} style={{ border: "1px solid #ef4444", background: "white", color: "#b91c1c", borderRadius: 12, padding: "8px 12px", cursor: "pointer", fontWeight: 600 }}>Delete Project</button>
-                    </div>
-
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14 }}>
-                      <div>
-                        <div style={{ fontSize: 14, marginBottom: 6 }}>Project number</div>
-                        <input
-                          value={projectDraft.number}
-                          onChange={(e) => setProjectDraft((current) => ({ ...current, number: e.target.value }))}
-                          style={{ width: "100%", padding: 10, borderRadius: 12, border: "1px solid #cbd5e1" }}
-                        />
-                      </div>
-                      <div>
-                        <div style={{ fontSize: 14, marginBottom: 6 }}>Project name</div>
-                        <input
-                          value={projectDraft.name}
-                          onChange={(e) => setProjectDraft((current) => ({ ...current, name: e.target.value }))}
-                          style={{ width: "100%", padding: 10, borderRadius: 12, border: "1px solid #cbd5e1" }}
-                        />
-                      </div>
-                      <div>
-                        <div style={{ fontSize: 14, marginBottom: 6 }}>Lead</div>
-                        <select
-                          value={projectDraft.primary_surveyor_id}
-                          onChange={(e) => setProjectDraft((current) => ({ ...current, primary_surveyor_id: e.target.value }))}
-                          style={{ width: "100%", padding: 10, borderRadius: 12, border: "1px solid #cbd5e1" }}
-                        >
-                          {teamMembers.map((person) => (
-                            <option key={person.id} value={person.id}>{person.name}</option>
-                          ))}
-                        </select>
-                      </div>
-                    </div>
-
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 16, gap: 12, flexWrap: "wrap" }}>
-                      <div style={{ color: projectSaveMessage === "Project details saved." || projectSaveMessage === "New project created." ? "#166534" : "#64748b", fontSize: 14 }}>
-                        {projectSaveMessage}
-                      </div>
-                      <button
-                        onClick={saveProjectDetails}
-                        style={{ background: "#0f172a", color: "white", border: 0, borderRadius: 12, padding: "10px 14px", cursor: "pointer", fontWeight: 600 }}
-                      >
-                        Save Project Details
-                      </button>
-                    </div>
-                  </div>
-
-                  <div style={cardStyle()}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 16 }}>
-                      <div style={{ fontSize: 22, fontWeight: 700 }}>Project Tasks</div>
-                      <button onClick={addProjectTask} style={{ border: "1px solid #cbd5e1", background: "white", borderRadius: 12, padding: "8px 12px", cursor: "pointer", fontWeight: 600 }}>Add Task</button>
-                    </div>
-
-                    <div style={{ display: "grid", gap: 12 }}>
-                      {selectedProject.tasks.map((task) => {
-                        const draft = taskDrafts[task.id] || {
-                          title: task.title || "",
-                          assigned_to: task.assigned_to || "",
-                          due_date: task.due_date || "",
-                          status: task.status || "Coming",
-                        };
-
-                        return (
-                          <div
-                            key={task.id}
-                            style={{
-                              border: "1px solid #e5e7eb",
-                              borderRadius: 16,
-                              padding: 14,
-                              display: "grid",
-                              gridTemplateColumns: "1.7fr 1fr 1fr 1fr auto auto",
-                              gap: 12,
-                              alignItems: "start",
-                            }}
-                          >
-                            <div>
-                              <div style={{ fontSize: 14, marginBottom: 6 }}>Task</div>
-                              <input
-                                value={draft.title}
-                                onChange={(e) =>
-                                  setTaskDrafts((current) => ({
-                                    ...current,
-                                    [task.id]: { ...draft, title: e.target.value },
-                                  }))
-                                }
-                                style={{ width: "100%", padding: 10, borderRadius: 12, border: "1px solid #cbd5e1" }}
-                              />
-                            </div>
-
-                            <div>
-                              <div style={{ fontSize: 14, marginBottom: 6 }}>Assigned</div>
-                              <select
-                                value={draft.assigned_to}
-                                onChange={(e) =>
-                                  setTaskDrafts((current) => ({
-                                    ...current,
-                                    [task.id]: { ...draft, assigned_to: e.target.value },
-                                  }))
-                                }
-                                style={{ width: "100%", padding: 10, borderRadius: 12, border: "1px solid #cbd5e1" }}
-                              >
-                                {teamMembers.map((person) => (
-                                  <option key={person.id} value={person.id}>{person.name}</option>
-                                ))}
-                              </select>
-                            </div>
-
-                            <div>
-                              <div style={{ fontSize: 14, marginBottom: 6 }}>Due date</div>
-                              <input
-                                type="date"
-                                value={draft.due_date}
-                                onChange={(e) =>
-                                  setTaskDrafts((current) => ({
-                                    ...current,
-                                    [task.id]: { ...draft, due_date: e.target.value },
-                                  }))
-                                }
-                                style={{ width: "100%", padding: 10, borderRadius: 12, border: "1px solid #cbd5e1" }}
-                              />
-                            </div>
-
-                            <div>
-                              <div style={{ fontSize: 14, marginBottom: 6 }}>Status</div>
-                              <select
-                                value={draft.status}
-                                onChange={(e) =>
-                                  setTaskDrafts((current) => ({
-                                    ...current,
-                                    [task.id]: { ...draft, status: e.target.value },
-                                  }))
-                                }
-                                style={{ width: "100%", padding: 10, borderRadius: 12, border: "1px solid #cbd5e1" }}
-                              >
-                                <option>Complete</option>
-                                <option>Due</option>
-                                <option>Coming</option>
-                              </select>
-                            </div>
-
-                            <div style={{ paddingTop: 28 }}>
-                              <button
-                                onClick={() => saveProjectTask(task.id)}
-                                style={{
-                                  background: "#0f172a",
-                                  color: "white",
-                                  border: 0,
-                                  borderRadius: 12,
-                                  padding: "10px 12px",
-                                  cursor: "pointer",
-                                  fontWeight: 600,
-                                }}
-                              >
-                                Save
-                              </button>
-                            </div>
-
-                            <div style={{ paddingTop: 28 }}>
-                              <button
-                                onClick={() => deleteProjectTask(task.id)}
-                                style={{
-                                  border: "1px solid #ef4444",
-                                  background: "white",
-                                  color: "#b91c1c",
-                                  borderRadius: 12,
-                                  padding: "10px 12px",
-                                  cursor: "pointer",
-                                  fontWeight: 600,
-                                }}
-                              >
-                                Delete
-                              </button>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-
-                    <div style={{ marginTop: 16, color: taskSaveMessage === "Task saved." || taskSaveMessage === "New task added." ? "#166534" : "#64748b", fontSize: 14 }}>
-                      {taskSaveMessage}
-                    </div>
-                  </div>
-                </>
-              )}
-            </div>
-          </div>
+          <ProjectsTab
+            projectGroups={projectGroups}
+            selectedProjectId={selectedProjectId}
+            projectDraft={projectDraft}
+            projectSaveMessage={projectSaveMessage}
+            taskDrafts={taskDrafts}
+            taskSaveMessage={taskSaveMessage}
+            savingProject={savingProject}
+            savingTask={savingTask}
+            teamMembers={teamMembers}
+            projectNotes={projectNotes}
+            onAddNote={saveProjectNote}
+            onDeleteNote={deleteProjectNote}
+            onEditNote={editProjectNote}
+            onSelectProject={setSelectedProjectId}
+            onCreateProject={createProject}
+            onSaveProjectDetails={saveProjectDetails}
+            onDeleteProject={deleteProject}
+            onAddTask={addProjectTask}
+            onSaveTask={saveProjectTask}
+            onDeleteTask={deleteProjectTask}
+            onProjectDraftChange={setProjectDraft}
+            onTaskDraftChange={setTaskDrafts}
+          />
         )}
 
         {tab === "calendar" && (
-          <div style={cardStyle()}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
-              <div>
-                <div style={{ fontSize: 22, fontWeight: 700 }}>Monthly Calendar</div>
-                <div style={{ color: "#64748b", marginTop: 4 }}>Click booking to edit. Click blank day space to add a booking.</div>
-              </div>
-              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                <button onClick={() => setCalendarMonth(new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() - 1, 1))} style={{ border: "1px solid #cbd5e1", background: "white", borderRadius: 12, padding: "10px 14px", cursor: "pointer" }}>Prev</button>
-                <div style={{ fontWeight: 700 }}>{formatMonthLabel(calendarMonth)}</div>
-                <button onClick={() => setCalendarMonth(new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() + 1, 1))} style={{ border: "1px solid #cbd5e1", background: "white", borderRadius: 12, padding: "10px 14px", cursor: "pointer" }}>Next</button>
-              </div>
-            </div>
-
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 8 }}>
-              {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => <div key={d} style={{ fontWeight: 700, padding: 10 }}>{d}</div>)}
-
-              {monthGrid.map((date) => {
-                const dateKey = ymd(date);
-                const dayBookings = bookings.filter((booking) => booking.date === dateKey).sort((a, b) => a.title.localeCompare(b.title));
-                const inMonth = date.getMonth() === selectedMonthIndex;
-
-                return (
-                  <div
-                    key={dateKey}
-                    onDragOver={(e) => e.preventDefault()}
-                    onDrop={() => {
-                      if (draggedBookingId) {
-                        const booking = bookings.find((b) => b.id === draggedBookingId);
-                        if (booking) moveBooking(booking.id, booking.assigned_to, dateKey);
-                      }
-                      setDraggedBookingId(null);
-                    }}
-                    onClick={() => {
-                      setEditingBookingId(null);
-                      setBookingMessage("");
-                      setNewBooking((cur) => ({ ...cur, date: dateKey }));
-                      setTab("new");
-                    }}
-                    style={{ minHeight: 140, padding: 8, border: "1px solid #e5e7eb", borderRadius: 12, background: inMonth ? "white" : "#f8fafc", cursor: "pointer", display: "flex", flexDirection: "column", gap: 6 }}
-                  >
-                    <div style={{ fontSize: 12, fontWeight: 700, color: inMonth ? "#0f172a" : "#94a3b8" }}>{date.getDate()}</div>
-                    {dayBookings.map((booking) => (
-                      <div
-                        key={booking.id}
-                        draggable
-                        onDragStart={(e) => {
-                          e.stopPropagation();
-                          setDraggedBookingId(booking.id);
-                        }}
-                        onDragEnd={() => setDraggedBookingId(null)}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          editBooking(booking);
-                        }}
-                        style={{ background: bookingColor(booking), borderRadius: 8, padding: 6, fontSize: 11, cursor: "grab" }}
-                      >
-                        <div style={{ fontWeight: 700 }}>{teamMap[booking.assigned_to]?.name}</div>
-                        <div>{booking.title}</div>
-                        <div>{booking.hours}h{booking.assistant_assigned_to ? ` · Asst: ${teamMap[booking.assistant_assigned_to]?.name}` : ""}</div>
-                      </div>
-                    ))}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
+          <CalendarTab
+            calendarMonth={calendarMonth}
+            monthGrid={monthGrid}
+            bookings={bookings}
+            draggedBookingId={draggedBookingId}
+            teamMap={teamMap}
+            onPrevMonth={() => setCalendarMonth((m) => new Date(m.getFullYear(), m.getMonth() - 1, 1))}
+            onNextMonth={() => setCalendarMonth((m) => new Date(m.getFullYear(), m.getMonth() + 1, 1))}
+            onDragStart={setDraggedBookingId}
+            onDragEnd={() => setDraggedBookingId(null)}
+            onMoveBooking={moveBooking}
+            onEditBooking={editBooking}
+            onAddBookingForDate={(dateKey) => openBookingModal(null, dateKey)}
+          />
         )}
 
         {tab === "person" && selectedPerson && (
-          <div style={{ display: "grid", gap: 16 }}>
-            <div style={cardStyle()}>
-              <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
-                <div>
-                  <div style={{ fontSize: 24, fontWeight: 700 }}>{selectedPerson.name}</div>
-                  <div style={{ color: "#64748b", marginTop: 4 }}>Personal workload view</div>
-                </div>
-                <div style={{ color: loadColor(selectedPerson.shownWeekPercent), fontWeight: 800, fontSize: 28 }}>{selectedPerson.shownWeekPercent}%</div>
-              </div>
-
-              <div style={{ display: "grid", gap: 16 }}>
-                <div>
-                  <div style={{ fontWeight: 700, marginBottom: 10 }}>Projects they lead</div>
-                  <div style={{ display: "grid", gap: 10 }}>
-                    {selectedPerson.projectsLed.length === 0 && <div style={{ color: "#64748b" }}>No lead projects.</div>}
-                    {selectedPerson.projectsLed.map((project) => (
-                      <button key={project.id} onClick={() => goToProject(project.id)} style={{ border: "1px solid #e5e7eb", borderRadius: 14, padding: 14, textAlign: "left", background: "white", cursor: "pointer" }}>
-                        <div style={{ fontWeight: 700 }}>{project.number} — {project.name}</div>
-                        <div style={{ color: "#475569", fontSize: 14, marginTop: 8 }}>Deadline: {formatDate(project.deadline)}</div>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div style={cardStyle()}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
-                    <div style={{ fontSize: 20, fontWeight: 700 }}>Personal Calendar</div>
-                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                      <button onClick={() => setPersonMonth(new Date(personMonth.getFullYear(), personMonth.getMonth() - 1, 1))} style={{ border: "1px solid #cbd5e1", background: "white", borderRadius: 12, padding: "10px 14px", cursor: "pointer" }}>Prev</button>
-                      <div style={{ fontWeight: 700 }}>{formatMonthLabel(personMonth)}</div>
-                      <button onClick={() => setPersonMonth(new Date(personMonth.getFullYear(), personMonth.getMonth() + 1, 1))} style={{ border: "1px solid #cbd5e1", background: "white", borderRadius: 12, padding: "10px 14px", cursor: "pointer" }}>Next</button>
-                    </div>
-                  </div>
-
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 8 }}>
-                    {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => <div key={d} style={{ fontWeight: 700, padding: 10 }}>{d}</div>)}
-
-                    {personMonthGrid.map((date) => {
-                      const dateKey = ymd(date);
-                      const dayBookings = bookings
-                        .filter((booking) => booking.date === dateKey && (booking.assigned_to === selectedPerson.id || booking.assistant_assigned_to === selectedPerson.id))
-                        .sort((a, b) => a.title.localeCompare(b.title));
-
-                      const dueTasks = projectTasks
-                        .filter((task) => task.assigned_to === selectedPerson.id && task.due_date === dateKey && task.status !== "Complete")
-                        .sort((a, b) => a.title.localeCompare(b.title));
-
-                      const inMonth = date.getMonth() === personMonthIndex;
-
-                      return (
-                        <div
-                          key={dateKey}
-                          onDragOver={(e) => e.preventDefault()}
-                          onDrop={() => {
-                            if (draggedBookingId) moveBooking(draggedBookingId, selectedPerson.id, dateKey);
-                            setDraggedBookingId(null);
-                          }}
-                          onClick={() => {
-                            setEditingBookingId(null);
-                            setBookingMessage("");
-                            setNewBooking((cur) => ({ ...cur, date: dateKey, assigned_to: selectedPerson.id, assistant_assigned_to: "" }));
-                            setTab("new");
-                          }}
-                          style={{ minHeight: 160, padding: 8, border: "1px solid #e5e7eb", borderRadius: 12, background: inMonth ? "white" : "#f8fafc", cursor: "pointer", display: "flex", flexDirection: "column", gap: 6 }}
-                        >
-                          <div style={{ fontSize: 12, fontWeight: 700, color: inMonth ? "#0f172a" : "#94a3b8" }}>{date.getDate()}</div>
-
-                          {dayBookings.map((booking) => {
-                            const isAssistant = booking.assistant_assigned_to === selectedPerson.id;
-                            return (
-                              <div
-                                key={`${booking.id}-${selectedPerson.id}`}
-                                draggable={!isAssistant}
-                                onDragStart={(e) => {
-                                  if (isAssistant) return;
-                                  e.stopPropagation();
-                                  setDraggedBookingId(booking.id);
-                                }}
-                                onDragEnd={() => setDraggedBookingId(null)}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  editBooking(booking);
-                                }}
-                                style={{ background: bookingColor(booking), borderRadius: 8, padding: 6, fontSize: 11, cursor: isAssistant ? "pointer" : "grab" }}
-                              >
-                                <div style={{ fontWeight: 700 }}>{booking.title}</div>
-                                <div>{booking.hours}h{isAssistant ? " · Assistant" : ""}</div>
-                              </div>
-                            );
-                          })}
-
-                          {dueTasks.map((task) => (
-                            <button
-                              key={task.id}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                goToProject(task.project_id);
-                              }}
-                              style={{ border: "1px solid #7f1d1d", background: "#7f1d1d", color: "white", borderRadius: 8, padding: 6, fontSize: 11, textAlign: "left", cursor: "pointer" }}
-                            >
-                              <div style={{ fontWeight: 700 }}>Due: {task.title}</div>
-                            </button>
-                          ))}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {tab === "new" && (
-          <div style={{ display: "grid", gap: 16 }}>
-            <div style={cardStyle()}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 16 }}>
-                <div style={{ fontSize: 22, fontWeight: 700 }}>{editingBookingId ? "Edit Booking" : "Add a New Booking"}</div>
-                {editingBookingId && (
-                  <button onClick={deleteBooking} style={{ border: "1px solid #ef4444", background: "white", color: "#b91c1c", borderRadius: 12, padding: "10px 14px", cursor: "pointer", fontWeight: 600 }}>
-                    Delete Booking
-                  </button>
-                )}
-              </div>
-
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(6, minmax(0, 1fr))", gap: 14 }}>
-                <div style={{ gridColumn: "span 2" }}>
-                  <div style={{ fontSize: 14, marginBottom: 6 }}>Booking title</div>
-                  <input value={newBooking.title} onChange={(e) => setNewBooking((s) => ({ ...s, title: e.target.value }))} style={{ width: "100%", padding: 10, borderRadius: 12, border: "1px solid #cbd5e1" }} />
-                </div>
-                <div>
-                  <div style={{ fontSize: 14, marginBottom: 6 }}>Type</div>
-                  <select value={newBooking.type} onChange={(e) => setNewBooking((s) => ({ ...s, type: e.target.value }))} style={{ width: "100%", padding: 10, borderRadius: 12, border: "1px solid #cbd5e1" }}>
-                    <option>Field</option>
-                    <option>Office</option>
-                  </select>
-                </div>
-                <div>
-                  <div style={{ fontSize: 14, marginBottom: 6 }}>Assigned to</div>
-                  <select value={newBooking.assigned_to} onChange={(e) => setNewBooking((s) => ({ ...s, assigned_to: e.target.value }))} style={{ width: "100%", padding: 10, borderRadius: 12, border: "1px solid #cbd5e1" }}>
-                    {teamMembers.map((person) => (
-                      <option key={person.id} value={person.id}>{person.name}</option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <div style={{ fontSize: 14, marginBottom: 6 }}>Assistant</div>
-                  <select value={newBooking.assistant_assigned_to} onChange={(e) => setNewBooking((s) => ({ ...s, assistant_assigned_to: e.target.value }))} style={{ width: "100%", padding: 10, borderRadius: 12, border: "1px solid #cbd5e1" }}>
-                    <option value="">None</option>
-                    {teamMembers.map((person) => (
-                      <option key={person.id} value={person.id}>{person.name}</option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <div style={{ fontSize: 14, marginBottom: 6 }}>Date</div>
-                  <input type="date" value={newBooking.date} onChange={(e) => setNewBooking((s) => ({ ...s, date: e.target.value }))} style={{ width: "100%", padding: 10, borderRadius: 12, border: "1px solid #cbd5e1" }} />
-                </div>
-                <div>
-                  <div style={{ fontSize: 14, marginBottom: 6 }}>Hours</div>
-                  <input type="number" value={newBooking.hours} onChange={(e) => setNewBooking((s) => ({ ...s, hours: e.target.value }))} style={{ width: "100%", padding: 10, borderRadius: 12, border: "1px solid #cbd5e1" }} />
-                </div>
-                <div>
-                  <div style={{ fontSize: 14, marginBottom: 6 }}>Tentative field</div>
-                  <label style={{ display: "flex", gap: 8, alignItems: "center", color: "#475569", paddingTop: 10 }}>
-                    <input type="checkbox" checked={newBooking.tentative} onChange={(e) => setNewBooking((s) => ({ ...s, tentative: e.target.checked }))} disabled={newBooking.type !== "Field"} />
-                    Mark as tentative
-                  </label>
-                </div>
-              </div>
-
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 14, gap: 12, flexWrap: "wrap" }}>
-                <div style={{ color: bookingMessage === "Booking added." || bookingMessage === "Booking saved." || bookingMessage === "Booking deleted." ? "#166534" : "#64748b", fontSize: 14 }}>
-                  {bookingMessage}
-                </div>
-                <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-                  {editingBookingId && (
-                    <button
-                      onClick={() => {
-                        setEditingBookingId(null);
-                        setBookingMessage("");
-                        setNewBooking({
-                          title: "",
-                          type: "Office",
-                          date: ymd(new Date()),
-                          assigned_to: teamMembers[0].id,
-                          assistant_assigned_to: "",
-                          hours: 4,
-                          tentative: false,
-                        });
-                      }}
-                      style={{ border: "1px solid #cbd5e1", background: "white", borderRadius: 12, padding: "10px 14px", cursor: "pointer", fontWeight: 600 }}
-                    >
-                      Cancel
-                    </button>
-                  )}
-                  <button onClick={createOrSaveBooking} style={{ background: "#0f172a", color: "white", border: 0, borderRadius: 12, padding: "10px 14px", cursor: "pointer", fontWeight: 600 }}>
-                    {editingBookingId ? "Save Booking" : "Add Booking"}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
+          <PersonTab
+            selectedPerson={selectedPerson}
+            personMonth={personMonth}
+            personMonthGrid={personMonthGrid}
+            bookings={bookings}
+            projectTasks={projectTasks}
+            projects={projects}
+            draggedBookingId={draggedBookingId}
+            onPrevMonth={() => setPersonMonth((m) => new Date(m.getFullYear(), m.getMonth() - 1, 1))}
+            onNextMonth={() => setPersonMonth((m) => new Date(m.getFullYear(), m.getMonth() + 1, 1))}
+            onDragStart={setDraggedBookingId}
+            onDragEnd={() => setDraggedBookingId(null)}
+            onMoveBooking={moveBooking}
+            onEditBooking={editBooking}
+            onAddBookingForPersonDate={(personId, dateKey) => openBookingModal(personId, dateKey)}
+            onGoToProject={goToProject}
+            onCompleteTask={completeTask}
+            onCreateProjectForPerson={createProjectForPerson}
+          />
         )}
       </div>
+
+      <BookingModal
+        bookingModal={bookingModal}
+        onCloseModal={closeBookingModal}
+        newBooking={newBooking}
+        editingBookingId={editingBookingId}
+        bookingMessage={bookingMessage}
+        saving={savingBooking}
+        teamMembers={teamMembers}
+        projects={projects}
+        projectTasks={projectTasks}
+        onNewBookingChange={setNewBooking}
+        onSave={createOrSaveBooking}
+        onDelete={deleteBooking}
+      />
     </div>
   );
 }
