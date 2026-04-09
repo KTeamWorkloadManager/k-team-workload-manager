@@ -475,10 +475,12 @@ export default function App() {
     setTab("projects");
   }
 
-  // Change #13: create project for a specific person, return to person tab
-  async function createProjectForPerson(leadId) {
-    const maxNum = projects.reduce((max, p) => { const n = parseInt(p.number, 10); return isNaN(n) ? max : Math.max(max, n); }, 24000);
-    const nextNum = maxNum + 1;
+  async function createProjectForPerson({ number, name, leadId, comments = "" }) {
+    const duplicate = projects.find((p) => String(p.number) === String(number));
+    if (duplicate) {
+      setGlobalError(`Project number ${number} is already in use by "${duplicate.name}".`);
+      return;
+    }
     const projectId = makeId("p");
     const firstTaskId = makeId("pt");
     const taskDueDate = ymd(addDays(new Date(), 3));
@@ -486,11 +488,11 @@ export default function App() {
     setSavingProject(true);
     const { error: projectError } = await supabase.from("projects").insert({
       id: projectId,
-      number: String(nextNum),
-      name: `New Project ${projects.length + 1}`,
+      number: String(number),
+      name,
       primary_surveyor_id: leadId,
       completed: false,
-      comments: "",
+      comments,
     });
 
     if (projectError) {
@@ -500,8 +502,8 @@ export default function App() {
     }
 
     const newProject = {
-      id: projectId, number: String(nextNum), name: `New Project ${projects.length + 1}`,
-      primary_surveyor_id: leadId, completed: false, comments: "",
+      id: projectId, number: String(number), name,
+      primary_surveyor_id: leadId, completed: false, comments,
     };
 
     const { error: taskError } = await supabase.from("project_tasks").insert({
@@ -518,8 +520,6 @@ export default function App() {
     if (!taskError) setProjectTasks((cur) => [...cur, newTask]);
     setProjects((cur) => [...cur, newProject]);
     setSelectedProjectId(projectId);
-    setTimeout(() => setProjectDraft({ number: "", name: "", primary_surveyor_id: leadId, comments: "", completed: false }), 0);
-    setTab("person");
   }
 
   async function addProjectTask() {
@@ -867,6 +867,8 @@ export default function App() {
             bookings={bookings}
             projectTasks={projectTasks}
             projects={projects}
+            teamMembers={teamMembers}
+            savingProject={savingProject}
             draggedBookingId={draggedBookingId}
             onPrevMonth={() => setPersonMonth((m) => new Date(m.getFullYear(), m.getMonth() - 1, 1))}
             onNextMonth={() => setPersonMonth((m) => new Date(m.getFullYear(), m.getMonth() + 1, 1))}
@@ -881,6 +883,37 @@ export default function App() {
           />
         )}
       </div>
+
+      {/* Floating surveyor quick-nav — hidden on Personal Tab */}
+      {tab !== "person" && (
+        <div style={{ position: "fixed", left: 14, top: "50%", transform: "translateY(-50%)", display: "flex", flexDirection: "column", gap: 8, zIndex: 500 }}>
+          {teamMembers.map((member) => (
+            <button
+              key={member.id}
+              title={member.name}
+              onClick={() => { setSelectedPersonId(member.id); setTab("person"); }}
+              style={{
+                width: 40,
+                height: 40,
+                borderRadius: "50%",
+                border: "2px solid white",
+                background: "#0f172a",
+                color: "white",
+                fontWeight: 700,
+                fontSize: 14,
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                boxShadow: "0 2px 10px rgba(15,23,42,0.3)",
+                flexShrink: 0,
+              }}
+            >
+              {member.name[0]}
+            </button>
+          ))}
+        </div>
+      )}
 
       <BookingModal
         bookingModal={bookingModal}
