@@ -9,6 +9,7 @@ import ProjectsTab from "./components/ProjectsTab";
 import CalendarTab from "./components/CalendarTab";
 import PersonTab from "./components/PersonTab";
 import BookingModal from "./components/BookingModal";
+import ManagerDashboard from "./components/ManagerDashboard";
 
 // =============================================================================
 // FALLBACK TEAM MEMBERS
@@ -87,6 +88,15 @@ export default function App() {
   const [savingBooking, setSavingBooking] = useState(false);
   const [globalError, setGlobalError] = useState("");
 
+  // Manager Dashboard
+  const [managerUnlocked, setManagerUnlocked] = useState(false);
+  const [showPasswordPrompt, setShowPasswordPrompt] = useState(false);
+  const [passwordInput, setPasswordInput] = useState("");
+  const [passwordError, setPasswordError] = useState("");
+  const [managerTodos, setManagerTodos] = useState([]);
+  const [managerNotes, setManagerNotes] = useState([]);
+  const [managerJobs, setManagerJobs] = useState([]);
+
   // Change #6: booking modal instead of tab
   const [bookingModal, setBookingModal] = useState({ open: false, date: "", personId: "" });
   const [newBooking, setNewBooking] = useState(EMPTY_BOOKING);
@@ -120,6 +130,21 @@ export default function App() {
   useEffect(() => {
     loadAllData();
   }, []);
+
+  useEffect(() => {
+    if (!managerUnlocked) return;
+    async function loadManagerData() {
+      const [todosRes, notesRes, jobsRes] = await Promise.all([
+        supabase.from("manager_todos").select("*").order("created_at", { ascending: true }),
+        supabase.from("manager_notes").select("*"),
+        supabase.from("manager_jobs").select("*").order("created_at", { ascending: true }),
+      ]);
+      if (!todosRes.error && todosRes.data) setManagerTodos(todosRes.data);
+      if (!notesRes.error && notesRes.data) setManagerNotes(notesRes.data);
+      if (!jobsRes.error && jobsRes.data) setManagerJobs(jobsRes.data);
+    }
+    loadManagerData();
+  }, [managerUnlocked]);
 
   // Sync project draft when selected project changes
   useEffect(() => {
@@ -730,6 +755,64 @@ export default function App() {
     setProjectNotes((cur) => [...cur, note]);
   }
 
+  async function moveTaskDueDate(taskId, newDate) {
+    const { error } = await supabase.from("project_tasks").update({ due_date: newDate }).eq("id", taskId);
+    if (error) { setGlobalError(`Could not update task due date: ${error.message}`); return; }
+    setProjectTasks((cur) => cur.map((t) => t.id === taskId ? { ...t, due_date: newDate } : t));
+  }
+
+  async function addManagerTodo(content) {
+    const id = makeId("mt");
+    const { error } = await supabase.from("manager_todos").insert({ id, content });
+    if (error) { setGlobalError(`Could not add todo: ${error.message}`); return; }
+    setManagerTodos((cur) => [...cur, { id, content, created_at: new Date().toISOString() }]);
+  }
+
+  async function updateManagerTodo(id, content) {
+    const { error } = await supabase.from("manager_todos").update({ content }).eq("id", id);
+    if (error) { setGlobalError(`Could not update todo: ${error.message}`); return; }
+    setManagerTodos((cur) => cur.map((t) => t.id === id ? { ...t, content } : t));
+  }
+
+  async function deleteManagerTodo(id) {
+    const { error } = await supabase.from("manager_todos").delete().eq("id", id);
+    if (error) { setGlobalError(`Could not delete todo: ${error.message}`); return; }
+    setManagerTodos((cur) => cur.filter((t) => t.id !== id));
+  }
+
+  async function saveManagerNote(personId, notes) {
+    const existing = managerNotes.find((n) => n.surveyor_name === personId);
+    if (existing) {
+      const { error } = await supabase.from("manager_notes").update({ notes }).eq("id", existing.id);
+      if (error) { setGlobalError(`Could not save note: ${error.message}`); return; }
+      setManagerNotes((cur) => cur.map((n) => n.id === existing.id ? { ...n, notes } : n));
+    } else {
+      const id = makeId("mn");
+      const { error } = await supabase.from("manager_notes").insert({ id, surveyor_name: personId, notes });
+      if (error) { setGlobalError(`Could not save note: ${error.message}`); return; }
+      setManagerNotes((cur) => [...cur, { id, surveyor_name: personId, notes }]);
+    }
+  }
+
+  async function addManagerJob(content) {
+    const id = makeId("mj");
+    const { error } = await supabase.from("manager_jobs").insert({ id, content });
+    if (error) { setGlobalError(`Could not add job: ${error.message}`); return; }
+    setManagerJobs((cur) => [...cur, { id, content, assigned_to: null, created_at: new Date().toISOString() }]);
+  }
+
+  async function updateManagerJob(id, updates) {
+    const { error } = await supabase.from("manager_jobs").update(updates).eq("id", id);
+    if (error) { setGlobalError(`Could not update job: ${error.message}`); return; }
+    setManagerJobs((cur) => cur.map((j) => j.id === id ? { ...j, ...updates } : j));
+  }
+
+  async function deleteManagerJob(id) {
+    const { error } = await supabase.from("manager_jobs").delete().eq("id", id);
+    if (error) { setGlobalError(`Could not delete job: ${error.message}`); return; }
+    setManagerJobs((cur) => cur.filter((j) => j.id !== id));
+  }
+
   function goToProject(projectId) {
     setSelectedProjectId(projectId);
     setTab("projects");
@@ -755,7 +838,15 @@ export default function App() {
           <div style={{ fontSize: 60, fontWeight: 800, letterSpacing: "-1px", padding: "8px 0" }}>K Team Workload Manager</div>
           <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
             <img src="/images/kteam-logo.png" alt="K Team" style={{ height: 192, objectFit: "contain" }} />
-            <img src="/images/everest-shield.png" alt="Everest Shield" style={{ height: 192, objectFit: "contain" }} />
+            <img
+              src="/images/everest-shield.png"
+              alt="Everest Shield"
+              style={{ height: 192, objectFit: "contain", cursor: "pointer" }}
+              onClick={() => {
+                if (managerUnlocked) { setTab("manager"); }
+                else { setPasswordInput(""); setPasswordError(""); setShowPasswordPrompt(true); }
+              }}
+            />
           </div>
         </div>
       </div>
@@ -763,7 +854,7 @@ export default function App() {
       {/* Nav bar */}
       <div style={{ background: "white", borderBottom: "1px solid #e5e7eb", padding: "0 32px" }}>
         <div style={{ maxWidth: 1480, margin: "0 auto", display: "flex", gap: 0 }}>
-          {[["overview", "Overview"], ["projects", "Projects"], ["calendar", "Calendar"]].map(([key, label]) => (
+          {[["overview", "Overview"], ["projects", "Projects"], ["calendar", "Calendar"], ...(managerUnlocked ? [["manager", "Manager"]] : [])].map(([key, label]) => (
             <button
               key={key}
               onClick={() => setTab(key)}
@@ -880,12 +971,36 @@ export default function App() {
             onGoToProject={goToProject}
             onCompleteTask={completeTask}
             onCreateProjectForPerson={createProjectForPerson}
+            onMoveTaskDueDate={moveTaskDueDate}
+          />
+        )}
+
+        {tab === "manager" && managerUnlocked && (
+          <ManagerDashboard
+            allWeeksLoad={allWeeksLoad}
+            teamMembers={teamMembers}
+            projects={projects}
+            projectTasks={projectTasks}
+            bookings={bookings}
+            managerTodos={managerTodos}
+            managerNotes={managerNotes}
+            managerJobs={managerJobs}
+            onAddTodo={addManagerTodo}
+            onUpdateTodo={updateManagerTodo}
+            onDeleteTodo={deleteManagerTodo}
+            onSaveNote={saveManagerNote}
+            onAddJob={addManagerJob}
+            onUpdateJob={updateManagerJob}
+            onDeleteJob={deleteManagerJob}
+            onGoToProject={goToProject}
+            onSelectPerson={(personId) => { setSelectedPersonId(personId); setTab("person"); }}
+            currentPeriodStart={currentPeriodStart}
           />
         )}
       </div>
 
-      {/* Floating surveyor quick-nav — hidden on Personal Tab */}
-      {tab !== "person" && (
+      {/* Floating surveyor quick-nav — hidden on Personal and Manager tabs */}
+      {tab !== "person" && tab !== "manager" && (
         <div style={{ position: "fixed", left: 14, top: "50%", transform: "translateY(-50%)", display: "flex", flexDirection: "column", gap: 8, zIndex: 500 }}>
           {teamMembers.map((member) => (
             <button
@@ -912,6 +1027,48 @@ export default function App() {
               {member.name[0]}
             </button>
           ))}
+        </div>
+      )}
+
+      {showPasswordPrompt && (
+        <div
+          style={{ position: "fixed", inset: 0, zIndex: 2000, background: "rgba(15,23,42,0.6)", display: "flex", alignItems: "center", justifyContent: "center", padding: 24, backdropFilter: "blur(2px)" }}
+          onClick={(e) => { if (e.target === e.currentTarget) setShowPasswordPrompt(false); }}
+        >
+          <div style={{ background: "white", borderRadius: 20, padding: 32, maxWidth: 360, width: "100%", boxShadow: "0 20px 60px rgba(15,23,42,0.25)", position: "relative" }}>
+            <button
+              onClick={() => setShowPasswordPrompt(false)}
+              style={{ position: "absolute", top: 16, right: 16, border: 0, background: "#f1f5f9", borderRadius: "50%", width: 32, height: 32, cursor: "pointer", color: "#64748b", fontSize: 16, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center" }}
+            >
+              ✕
+            </button>
+            <div style={{ fontSize: 20, fontWeight: 700, marginBottom: 6 }}>Manager Dashboard</div>
+            <div style={{ fontSize: 13, color: "#64748b", marginBottom: 20 }}>Enter the password to unlock.</div>
+            <input
+              type="password"
+              value={passwordInput}
+              onChange={(e) => setPasswordInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  if (passwordInput === "KH") { setManagerUnlocked(true); setShowPasswordPrompt(false); setTab("manager"); }
+                  else { setPasswordError("Incorrect password."); }
+                }
+              }}
+              placeholder="Password"
+              autoFocus
+              style={{ width: "100%", padding: "10px 14px", borderRadius: 10, border: "1px solid #e2e8f0", boxSizing: "border-box", fontSize: 14, background: "#fafafa", outline: "none", marginBottom: 10 }}
+            />
+            {passwordError && <div style={{ fontSize: 13, color: "#dc2626", fontWeight: 500, marginBottom: 10 }}>{passwordError}</div>}
+            <button
+              onClick={() => {
+                if (passwordInput === "KH") { setManagerUnlocked(true); setShowPasswordPrompt(false); setTab("manager"); }
+                else { setPasswordError("Incorrect password."); }
+              }}
+              style={{ background: "#0f172a", color: "white", border: 0, borderRadius: 10, padding: "10px 20px", cursor: "pointer", fontWeight: 600, fontSize: 14, width: "100%" }}
+            >
+              Unlock
+            </button>
+          </div>
         </div>
       )}
 

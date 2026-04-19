@@ -46,10 +46,12 @@ export default function PersonTab({
   draggedBookingId, onPrevMonth, onNextMonth, onDragStart, onDragEnd,
   onMoveBooking, onEditBooking, onAddBookingForPersonDate, onGoToProject,
   projects, teamMembers, savingProject, onCompleteTask, onCreateProjectForPerson,
+  onMoveTaskDueDate,
 }) {
   const personMonthIndex = personMonth.getMonth();
   const [showCompletedModal, setShowCompletedModal] = useState(false);
   const [showNewProjectModal, setShowNewProjectModal] = useState(false);
+  const [draggedTaskId, setDraggedTaskId] = useState(null);
   const [newProjectDraft, setNewProjectDraft] = useState({ number: "", name: "", leadId: "", comments: "" });
   const [newProjectError, setNewProjectError] = useState("");
 
@@ -259,6 +261,7 @@ export default function PersonTab({
                   onDragOver={(e) => e.preventDefault()}
                   onDrop={() => {
                     if (draggedBookingId) onMoveBooking(draggedBookingId, selectedPerson.id, dateKey);
+                    else if (draggedTaskId && onMoveTaskDueDate) { onMoveTaskDueDate(draggedTaskId, dateKey); setDraggedTaskId(null); }
                     onDragEnd();
                   }}
                   onClick={() => onAddBookingForPersonDate(selectedPerson.id, dateKey)}
@@ -322,8 +325,11 @@ export default function PersonTab({
                   {dueTasks.map((task) => {
                     const projName = getProjectName(task.project_id);
                     return (
-                      <button
+                      <div
                         key={task.id}
+                        draggable
+                        onDragStart={(e) => { e.stopPropagation(); setDraggedTaskId(task.id); }}
+                        onDragEnd={() => setDraggedTaskId(null)}
                         onClick={(e) => { e.stopPropagation(); onGoToProject(task.project_id); }}
                         style={{
                           border: 0,
@@ -333,11 +339,11 @@ export default function PersonTab({
                           padding: "4px 6px",
                           fontSize: 11,
                           textAlign: "left",
-                          cursor: "pointer",
+                          cursor: "grab",
                         }}
                       >
                         <div style={{ fontWeight: 700, lineHeight: 1.3 }}>Due: {task.title}{projName ? ` — ${projName}` : ""}</div>
-                      </button>
+                      </div>
                     );
                   })}
                 </div>

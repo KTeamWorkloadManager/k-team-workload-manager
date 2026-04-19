@@ -47,16 +47,16 @@ export function bookingColor(booking) {
 }
 
 export function loadColor(percent) {
-  if (percent > 100) return "#dc2626";
-  if (percent >= 91) return "#f97316";
-  if (percent >= 71) return "#16a34a";
+  if (percent >= 100) return "#991b1b";
+  if (percent >= 90) return "#ea580c";
+  if (percent >= 80) return "#16a34a";
   return "#3b82f6";
 }
 
 export function loadBg(percent) {
-  if (percent > 100) return "#fee2e2";
-  if (percent >= 91) return "#fff7ed";
-  if (percent >= 71) return "#f0fdf4";
+  if (percent >= 100) return "#fee2e2";
+  if (percent >= 90) return "#fff7ed";
+  if (percent >= 80) return "#f0fdf4";
   return "#eff6ff";
 }
 

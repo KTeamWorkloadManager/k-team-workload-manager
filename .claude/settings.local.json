@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(grep -l \"^import React\" c:/Users/KevinHe/Desktop/k-team-workload-manager/k-team-workload-manager/src/components/*.jsx c:/Users/KevinHe/Desktop/k-team-workload-manager/k-team-workload-manager/src/App.jsx)"
+      "Bash(grep -l \"^import React\" c:/Users/KevinHe/Desktop/k-team-workload-manager/k-team-workload-manager/src/components/*.jsx c:/Users/KevinHe/Desktop/k-team-workload-manager/k-team-workload-manager/src/App.jsx)",
+      "Bash(npm install:*)",
+      "Bash(npm run:*)"
     ]
   }
 }
